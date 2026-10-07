@@ -1,8 +1,15 @@
 /* Real Chrome UI input against the temporary synthetic-only workflow service. */
 const fs = require("node:fs/promises");
 const path = require("node:path");
+// Node may otherwise exit while awaiting a WebSocket event in the CDP flow.
+const keepAlive = setInterval(() => {}, 1000);
+const tracePath = process.env.JEPA_QA_TRACE_PATH;
+function trace(message) {
+  if (tracePath) require("node:fs").appendFileSync(tracePath, `${new Date().toISOString()} ${message}\n`);
+}
 
 async function main() {
+  trace("runner started");
   const debugPort = Number(process.argv[2]);
   const downloadDir = process.argv[3];
   const lightOnly = process.argv.includes("--light-only");
@@ -11,9 +18,11 @@ async function main() {
   }
 
   const version = await (await fetch(`http://127.0.0.1:${debugPort}/json/version`)).json();
+  trace(`connected to ${version.Browser}`);
   const targets = await (await fetch(`http://127.0.0.1:${debugPort}/json/list`)).json();
   const target = targets.find((item) => item.type === "page" && item.url.includes("127.0.0.1:8768/"));
   if (!target) throw new Error("isolated synthetic Chrome page not found");
+  trace("synthetic browser target found");
   let browserSocket;
   const downloadEvents = [];
 
@@ -40,6 +49,7 @@ async function main() {
     });
   }
   await setDownloadDirectory();
+  trace("download directory configured");
 
   const ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {
@@ -66,6 +76,7 @@ async function main() {
   await send("Page.enable");
   await send("Runtime.enable");
   await send("Network.enable");
+  trace("page, runtime, and network domains enabled");
 
   async function evaluate(expression, awaitPromise = true) {
     let lastError;
@@ -245,6 +256,7 @@ async function main() {
     return { queryPlayback, queryEndReplay, contextLabel, secondCandidateStart, finalTab: "candidate" };
   }
   async function runEngine(engine, first) {
+    trace(`${engine} flow started`);
     if (first) {
       await clickElement("#choose-store");
       await waitFor("document.querySelector('#store-label').textContent === 'store'", 5000, "temporary store selection");
@@ -259,6 +271,7 @@ async function main() {
     await waitFor(`document.querySelector('#engine').value === ${JSON.stringify(engine)}`, 3000, `${engine} mode selection`);
     await clickElement("#start-index");
     const index = await awaitJob(`${engine} indexing`);
+    trace(`${engine} indexing complete`);
     await selectFile();
     const emptyOverlayHidden = await evaluate("document.querySelector('#video-empty').hidden");
     if (!emptyOverlayHidden) throw new Error(`${engine} indexing refresh left the empty-state overlay above the selected video`);
@@ -267,6 +280,7 @@ async function main() {
     const queryPlayback = await restartAndPlayQuery();
     await clickElement("#start-search");
     const search = await awaitJob(`${engine} search`);
+    trace(`${engine} search complete`);
     const resultCount = await waitFor("document.querySelectorAll('.match-card').length", 10000, `${engine} results`);
     if (resultCount < 2) throw new Error(`${engine} produced fewer than 2 candidate rows`);
     await clickElement(".match-card .button-compare");
@@ -281,12 +295,14 @@ async function main() {
       candidatePlayback = { ok: false, error: String(error.message), observed };
     }
     const candidateEndReplay = await playToEndAndReplay("#candidate-player");
+    trace(`${engine} compare playback and end replay complete`);
     if (!candidateEndReplay.restarted) throw new Error(`candidate player did not restart from the selected range start: ${JSON.stringify(candidateEndReplay)}`);
     const tabAndContext = await compareTabsAndContext();
     const baseReferenceCount = Number(await evaluate("document.querySelector('#reference-count').textContent"));
     await clickElement(".match-card:nth-child(1) .button-keep");
     await waitFor(`document.querySelector('#reference-count').textContent === ${JSON.stringify(String(baseReferenceCount + 1))}`, 5000, `${engine} keep decision`);
     await clickElement(".match-card:nth-child(2) .button-hold");
+    trace(`${engine} keep/hold decisions complete`);
     await waitFor(`document.querySelector('#reference-count').textContent === ${JSON.stringify(String(baseReferenceCount + 2))}`, 5000, `${engine} hold decision`);
     return { engine, index, search, resultCount, queryPlayback, candidatePlayback, candidateEndReplay, tabAndContext, references: 2 };
   }
@@ -294,6 +310,7 @@ async function main() {
   try {
     await send("Page.reload", { ignoreCache: true });
     await waitFor("document.readyState === 'complete' && document.querySelector('#start-index')", 10000, "app boot");
+    trace("application booted");
     const light = await runEngine("color-motion", true);
     const jepa = lightOnly ? null : await runEngine("vjepa2", false);
     const count = await evaluate("document.querySelector('#reference-count').textContent");
@@ -311,11 +328,13 @@ async function main() {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
     if (!exportPath) throw new Error(`references JSON did not download; files=${JSON.stringify(await fs.readdir(downloadDir))}; network=${JSON.stringify(exportRequests)}; browser=${JSON.stringify(downloadEvents)}; link=${JSON.stringify(exportState)}`);
+    trace("reference JSON download observed");
     const exported = JSON.parse(await fs.readFile(exportPath, "utf8"));
     const rows = exported.references || exported;
     if (!Array.isArray(rows) || rows.length !== expectedRows) throw new Error(`expected ${expectedRows} exported JSON rows; got ${Array.isArray(rows) ? rows.length : "invalid"}`);
     console.log(JSON.stringify({ browser: version.Browser, title: await evaluate("document.title"), picker: "test substitute returned only the H.264 synthetic fixture; native file dialog was not opened", browserInput: "CDP mouse/keyboard input used the two-step preparation card, synthetic picker/store, engine selects, indexing/search, query/candidate playback controls, compare/decision buttons, and JSON link", colorMotion: light, vjepa2: jepa, export: { rows: rows.length, bytes: (await fs.stat(exportPath)).size, decisions: rows.map((row) => row.decision).sort() } }, null, 2));
   } finally {
+    trace("closing isolated browser");
     ws.close();
     try {
       browserSocket.send(JSON.stringify({ id: 1, method: "Browser.close" }));
@@ -323,4 +342,4 @@ async function main() {
   }
 }
 
-main().catch((error) => { console.error(error.stack || String(error)); process.exitCode = 1; });
+main().catch((error) => { console.error(error.stack || String(error)); process.exitCode = 1; }).finally(() => clearInterval(keepAlive));
