@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="__CSRF_TOKEN__">
+  <title>JEPA-ScenePick — Local</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">検索画面へ移動</a>
+  <header class="topbar">
+    <a class="brand" href="#main-content" aria-label="JEPA-ScenePick ホーム">
+      <span class="brand-mark" aria-hidden="true">J</span>
+      <span class="brand-copy"><strong>JEPA-ScenePick</strong><small>LOCAL VIDEO SEARCH</small></span>
+    </a>
+    <div class="topbar-right">
+      <span class="mode-label" id="engine-summary">Color + Motion</span>
+      <span class="local-indicator"><span aria-hidden="true"></span>このMac内で処理</span>
+    </div>
+  </header>
+
+  <main id="main-content" class="workspace">
+    <section class="intro-row" aria-labelledby="page-title">
+      <div>
+        <p class="eyebrow">JEPA-ScenePick · LOCAL VIDEO SEARCH</p>
+        <h1 id="page-title">見つけたい瞬間を、映像から。</h1>
+      </div>
+      <p class="intro-note">見本と候補を同じ画面で確認できます。動画はアップロードされません。</p>
+    </section>
+
+    <section class="prepare-card" aria-label="検索の準備">
+    <div class="prepare-heading"><span class="step-number">01</span><span>動画を追加して索引を準備</span><span class="step-divider" aria-hidden="true"></span><span class="step-number">02</span><span>見本の区間を選んで検索</span></div>
+    <div class="prepare-grid">
+    <details id="library-settings" class="settings-panel" open>
+      <summary><span>動画・索引</span><span id="library-count" class="settings-count">0本</span><span id="prepare-ready" class="prepare-ready">動画を選択してください</span></summary>
+      <div class="settings-content">
+        <div class="settings-toolbar">
+          <div>
+            <label class="field-label" for="engine">検索方式</label>
+            <select id="engine" class="control-select engine-select">
+              <option value="vjepa2">V-JEPA 2 · ViT-L / 16</option>
+              <option value="color-motion">Color + Motion · 軽量</option>
+            </select>
+            <p id="engine-note" class="field-help">方式は索引・検索結果のfingerprintに記録されます。モデル重みは自動取得しません。</p>
+          </div>
+          <div class="settings-actions">
+            <span id="store-label" class="store-label">標準の保存先</span>
+            <button id="choose-store" class="button button-secondary" type="button">保存先を選ぶ</button>
+            <button id="add-video" class="button button-secondary" type="button">動画を選ぶ</button>
+            <button id="start-index" class="button button-secondary" type="button" disabled>索引を作成 / 再開</button>
+          </div>
+        </div>
+        <div class="library-list-wrap">
+          <div class="list-caption">索引対象（チェックした動画）</div>
+          <div id="library-list" class="library-list empty-state">動画を選ぶと一覧に表示されます。</div>
+        </div>
+      </div>
+    </details>
+    <div class="control-bar" aria-label="見本区間">
+      <div class="sample-controls">
+        <label class="visually-hidden" for="query-file">見本に使う動画</label>
+        <select id="query-file" class="control-select" aria-label="見本に使う動画">
+          <option value="">先に動画を選択</option>
+        </select>
+        <label class="visually-hidden" for="query-start">見本開始時刻（秒）</label>
+        <div class="range-control">
+          <span class="range-label">検索する2秒</span>
+          <input id="query-start" class="time-input" type="number" min="0" step="0.5" value="0" aria-label="見本開始時刻（秒）">
+          <span class="range-arrow" aria-hidden="true">→</span>
+          <output id="query-end" class="range-end" aria-label="見本終了時刻">2.000</output>
+          <span class="range-unit">秒</span>
+        </div>
+        <span class="duration-lock" title="検索区間は2秒固定">2秒固定</span>
+      </div>
+      <button id="start-search" class="button button-primary" type="button" aria-disabled="true"><span>この区間を検索</span></button>
+    </div>
+    </div>
+    </section>
+
+    <section id="job-strip" class="job-strip" aria-label="処理状況" aria-live="polite">
+      <div class="job-message"><span id="job-dot" class="job-dot" aria-hidden="true"></span><span id="job-status">動画を選択してください。</span></div>
+      <progress id="job-progress" max="1" value="0" aria-label="処理の進捗"></progress>
+      <span id="progress-caption" class="progress-caption">待機中</span>
+      <button id="cancel-job" class="button button-stop" type="button" disabled>停止</button>
+    </section>
+
+    <section class="workbench" aria-label="見本と検索候補">
+      <section class="viewer-panel" aria-label="映像プレビュー">
+        <div class="viewer-head">
+          <div class="view-tabs" role="tablist" aria-label="表示する動画">
+            <button id="query-view-tab" class="view-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="query-view">見本</button>
+            <button id="candidate-view-tab" class="view-tab" type="button" role="tab" aria-selected="false" aria-controls="candidate-view" disabled>候補を比較</button>
+          </div>
+          <span id="active-range-label" class="active-range-label">00:00 – 00:02</span>
+        </div>
+        <div class="video-stage">
+          <div id="query-view" class="player-view" role="tabpanel" aria-labelledby="query-view-tab">
+            <video id="query-player" controls preload="metadata" playsinline aria-label="見本動画"></video>
+          </div>
+          <div id="candidate-view" class="player-view is-hidden" role="tabpanel" aria-labelledby="candidate-view-tab" hidden>
+            <video id="candidate-player" controls preload="metadata" playsinline aria-label="選択した候補動画"></video>
+          </div>
+          <p id="query-playback-status" class="playback-status" role="status" aria-live="polite" hidden></p>
+          <p id="candidate-playback-status" class="playback-status" role="status" aria-live="polite" hidden></p>
+          <div id="video-empty" class="video-empty">
+            <span class="empty-mark" aria-hidden="true">▶</span>
+            <p>動画を選ぶと、ここに見本が表示されます。</p>
+          </div>
+        </div>
+        <div class="viewer-footer">
+          <span id="query-range-label" class="timecode">00:00 – 00:02</span>
+          <button id="query-context" class="context-button" type="button" disabled>前後5秒を見る</button>
+          <button id="candidate-context" class="context-button is-hidden" type="button" disabled>前後5秒を見る</button>
+        </div>
+        <p class="viewer-help">候補を選ぶと同じプレーヤーで比較できます。再生区間は2秒、文脈表示は前後5秒です。</p>
+      </section>
+
+      <aside class="results-panel" aria-labelledby="results-title">
+        <div class="results-heading">
+          <div>
+            <p class="eyebrow">MATCHES</p>
+            <h2 id="results-title">類似候補</h2>
+          </div>
+          <span id="result-count" class="result-count">0</span>
+        </div>
+        <p id="result-provenance" class="result-provenance">検索方式とfingerprintは検索後に表示されます。</p>
+        <p id="result-engine-mismatch" class="result-engine-mismatch" aria-live="polite" hidden></p>
+        <p id="query-index-notice" class="query-index-notice" aria-live="polite" hidden></p>
+        <p class="score-note">類似度は特徴の近さです。正解確率ではありません。</p>
+        <div id="results-list" class="results-list empty-state" aria-live="polite">2秒の見本を指定して検索してください。</div>
+        <div class="reference-tools">
+          <div class="reference-heading"><span>採用・保留</span><span id="reference-count">0</span></div>
+          <div id="references-list" class="reference-list empty-state">記録した候補がここに表示されます。</div>
+          <a id="export-references" class="button button-export button-disabled" href="/api/references/export" aria-disabled="true">JSONを書き出す</a>
+        </div>
+      </aside>
+    </section>
+
+    <footer class="footer-note">ローカルの素材・索引・参照リストはこのMacに保存されます。ネットワークマウントの完全判定やOS全体の通信遮断は行いません。</footer>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

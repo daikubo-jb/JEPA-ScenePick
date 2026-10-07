@@ -1,0 +1,12 @@
+.goal-driven-harness/
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+.test-deps/
+.pytest_cache/
+*.mp4
+*.sqlite
+*.sqlite-*
+
+.runtime-deps/
