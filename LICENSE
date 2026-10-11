@@ -20,6 +20,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-This license applies only to original project code. Third-party code, model
-weights, dependencies, media, screenshots, and other assets are governed by
-their own applicable terms; see THIRD_PARTY_NOTICES.md.
+This license also applies to these project-created synthetic video fixtures:
+samples/synthetic-court-motion.mp4 and
+samples/synthetic-court-motion-h264.mp4. The standard copyright notice and
+permission notice conditions above apply to those files as well.
+
+This license does not apply to third-party code, model weights, dependencies,
+real-world video, third-party media, screenshots, or other assets unless
+separately stated. See THIRD_PARTY_NOTICES.md for scope notes.

@@ -33,4 +33,6 @@ upstreamのlicensing説明は本repoが利用するすべてのplatform-specific
 
 ## 素材とモデルの再配布
 
-このrepoには第三者動画、モデル重み、スクリーンショットなどの実素材を同梱しません。独自コードのMIT Licenseはそのような素材の利用・再配布権を与えません。外部動画を利用または再配布する場合は、作品ごとのlicense、作者表示、変更表示、肖像・音源・商標・codec等の別条件を利用者が確認してください。
+このrepoに同梱する動画2件 [`samples/synthetic-court-motion.mp4`](samples/synthetic-court-motion.mp4) と [`samples/synthetic-court-motion-h264.mp4`](samples/synthetic-court-motion-h264.mp4) は、プロジェクト内で自作した合成fixtureで、[`LICENSE`](LICENSE) のMIT License対象です。標準MIT条文の著作権表示・許諾表示条件はこれらの動画にも適用されます。
+
+第三者動画、実動画、モデル重み、スクリーンショットなどの第三者素材は同梱せず、この合成fixtureに対する許諾の対象でもありません。独自コードとこの2件の合成動画に対するMIT Licenseは、第三者素材の利用・再配布権を与えません。外部動画を利用または再配布する場合は、作品ごとのlicense、作者表示、変更表示、肖像・音源・商標・codec等の別条件を利用者が確認してください。

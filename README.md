@@ -137,4 +137,9 @@ python -m jepasearch.cli bench --output /tmp/jepa-benchmark.json
 
 ## ライセンス
 
-本プロジェクト独自コードには[MIT License](LICENSE)が適用されます。これは第三者loader、依存パッケージ、モデルcheckpoint、動画、画像などに自動適用されません。各権利条件と未確認事項は[第三者コンポーネント・素材のnotice](THIRD_PARTY_NOTICES.md)を確認してください。これは完全なSBOMや正式な全体監査の代わりではありません。
+本プロジェクト独自コードと、プロジェクト内で自作した次の合成動画には[MIT License](LICENSE)が適用されます。動画にもMITの著作権表示・許諾表示条件を含む標準条文が適用されます。
+
+- [`samples/synthetic-court-motion.mp4`](samples/synthetic-court-motion.mp4)
+- [`samples/synthetic-court-motion-h264.mp4`](samples/synthetic-court-motion-h264.mp4)
+
+この許諾は第三者loader、依存パッケージ、モデルcheckpoint、実動画、第三者素材には適用されません。各権利条件と未確認事項は[第三者コンポーネント・素材のnotice](THIRD_PARTY_NOTICES.md)を確認してください。これは完全なSBOMや正式な全体監査の代わりではありません。
