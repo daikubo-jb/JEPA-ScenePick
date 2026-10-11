@@ -155,6 +155,9 @@ h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.25px; }
 .field-label { display: block; margin-bottom: 6px; color: #3c4c61; font-size: 12px; font-weight: 650; }
 .engine-select { width: 100%; max-width: none; }
 .field-help { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.engine-readiness { max-width: 560px; margin-top: 8px; padding: 9px 10px; border: 1px solid #d6dce5; border-radius: 6px; color: #46566d; background: #f5f7fa; font-size: 11px; line-height: 1.5; }
+.engine-readiness.is-unavailable { border-color: #e1b9bb; color: #7f3136; background: #fff4f4; }
+.engine-readiness.is-available { border-color: #bdd8c5; color: #245b35; background: #f2faf4; }
 .settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .store-label { max-width: 180px; overflow: hidden; color: var(--muted); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .library-list-wrap { min-width: 0; }

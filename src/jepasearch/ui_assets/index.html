@@ -43,7 +43,12 @@
               <option value="vjepa2">V-JEPA 2 · ViT-L / 16</option>
               <option value="color-motion">Color + Motion · 軽量</option>
             </select>
-            <p id="engine-note" class="field-help">方式は索引・検索結果のfingerprintに記録されます。モデル重みは自動取得しません。</p>
+            <p id="engine-note" class="field-help">方式は索引・検索結果のfingerprintに記録されます。利用できない方式では索引を開始できません。</p>
+            <div id="engine-readiness" class="engine-readiness" role="status" aria-live="polite">ローカルengineの準備状態を確認しています。</div>
+            <details id="model-details" class="model-details" hidden>
+              <summary>モデル詳細・検証状態</summary>
+              <p id="model-details-message" class="field-help"></p>
+            </details>
           </div>
           <div class="settings-actions">
             <span id="store-label" class="store-label">標準の保存先</span>

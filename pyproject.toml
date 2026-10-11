@@ -2,12 +2,14 @@
 name = "jepa-video-search"
 version = "0.1.0"
 description = "Mac-local video segment retrieval prototype"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12,<3.14"
 dependencies = ["numpy==2.2.6", "opencv-python-headless==4.11.0.86"]
 
 [project.optional-dependencies]
 test = ["pytest==8.4.1"]
-model = ["Pillow==11.2.1", "torch==2.7.1", "transformers==4.53.3"]
+model = ["Pillow==11.2.1", "torch==2.7.1", "torchvision==0.22.1", "transformers==4.53.3"]
 
 [project.scripts]
 jepa-search = "jepasearch.cli:main"

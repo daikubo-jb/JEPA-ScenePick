@@ -10,3 +10,37 @@ __pycache__/
 *.sqlite-*
 
 .runtime-deps/
+.venv-vjepa/
+.local/
+
+# Screenshot provenance not yet confirmed; keep the supported synthetic QA outputs visible.
+/screenshots/ui-redesign-final-20261007.png
+/screenshots/browser-qa-synthetic-20261009.png
+/screenshots/synthetic-ui-review-before-provenance.png
+/screenshots/synthetic-ui-review.png
+/screenshots/ui-redesign-final-20261006-r2.png
+/screenshots/ui-redesign-final-20261006-r3.png
+/screenshots/ui-redesign-final-20261006-r4.png
+/screenshots/ui-redesign-final-20261006-r5.png
+/screenshots/ui-redesign-final-20261006.png
+/screenshots/ui-redesign-v1.png
+/screenshots/ui-redesign-v2.png
+/screenshots/ui-redesign-v3.png
+/screenshots/ui-redesign-v4.png
+/screenshots/ui-redesign-v5.png
+/screenshots/ui-redesign-v6.png
+/screenshots/ui-redesign-v7.png
+/screenshots/ui-redesign-v8.png
+
+# Internal benchmark, QA, and pre-publication review materials stay local until reviewed.
+/reports/
+/docs/architecture-design-security-review.md
+/docs/license-candidate-mit.md
+/docs/publication-checklist.md
+/docs/publication-license-review.md
+
+# Internal local-scale measurement tools; their outputs may contain local media paths.
+/scripts/scale_benchmark.py
+/scripts/scale_diagnose.py
+/scripts/scale_retest.py
+/scripts/verify_scale_report.py

@@ -2,10 +2,19 @@
 set -eu
 
 PROJECT_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-RISK_ROOT=$(CDPATH= cd -- "$PROJECT_ROOT/../jepa-risk-detection" && pwd)
-MODEL_PYTHON="$RISK_ROOT/.venv/bin/python"
+MODEL_PYTHON="$PROJECT_ROOT/.venv-vjepa/bin/python"
 PORT=${JEPA_UI_PORT:-8766}
-PYTHONPATH_VALUE="$PROJECT_ROOT/.runtime-deps:$PROJECT_ROOT/src:$RISK_ROOT/src"
+case "$PORT" in
+  ''|*[!0-9]*) printf 'JEPA_UI_PORT must be a decimal port from 1 to 65535.\n' >&2; exit 2 ;;
+esac
+# Canonicalize leading zeroes before shell numeric comparisons (some /bin/sh
+# implementations parse leading-zero values as octal).
+while [ "${#PORT}" -gt 1 ] && [ "${PORT#0}" != "$PORT" ]; do PORT=${PORT#0}; done
+if [ "${#PORT}" -gt 5 ] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+  printf 'JEPA_UI_PORT must be a decimal port from 1 to 65535.\n' >&2
+  exit 2
+fi
+PYTHONPATH_VALUE="$PROJECT_ROOT/src"
 PROJECT_KEY=$(printf '%s' "$PROJECT_ROOT" | shasum -a 256 | cut -c1-12)
 PID_FILE="${TMPDIR:-/tmp}/jepa-video-search-ui-${PROJECT_KEY}-${PORT}.pid"
 URL="http://127.0.0.1:${PORT}/"
@@ -36,11 +45,15 @@ PY
 case "${1:-}" in
   start)
     if [ ! -x "$MODEL_PYTHON" ]; then
-      printf 'Existing model Python is unavailable: %s\n' "$MODEL_PYTHON" >&2
+      printf 'Project V-JEPA Python is unavailable; run scripts/setup_model_env.sh first.\n' >&2
       exit 1
     fi
     if pid=$(owned_pid); then
-      printf 'Already running (pid %s): %s\n' "$pid" "$URL"
+      command=$(ps -p "$pid" -o command= 2>/dev/null || true)
+      case "$command" in
+        *"$MODEL_PYTHON"*) printf 'Already running with project V-JEPA environment (pid %s): %s\n' "$pid" "$URL" ;;
+        *) printf 'Already running under another environment (pid %s): %s; leaving it untouched. Stop it explicitly before restarting.\n' "$pid" "$URL" >&2 ;;
+      esac
       exit 0
     fi
     rm -f "$PID_FILE"
@@ -48,6 +61,7 @@ case "${1:-}" in
       printf 'Port %s is already in use; no process was changed.\n' "$PORT" >&2
       exit 1
     fi
+    "$PROJECT_ROOT/scripts/check_vjepa_ui_startup.sh"
     cd "$PROJECT_ROOT"
     nohup env PYTHONDONTWRITEBYTECODE=1 HF_HOME=/tmp/jepa-hf-readonly HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
       PYTHONPATH="$PYTHONPATH_VALUE" "$MODEL_PYTHON" "$PROJECT_ROOT/scripts/run_ui_server.py" \

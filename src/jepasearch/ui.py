@@ -19,11 +19,21 @@ from typing import Callable
 from urllib.parse import urlsplit
 
 from .core import QUERY_DURATION_TOLERANCE_S, SearchError, decide, index_video, references, resolve_local_media, search
+from .model import vjepa2_readiness
 
 _FILE_ID = re.compile(r"^[0-9a-f]{32}$")
 _CANDIDATE_ID = re.compile(r"^[0-9a-f]{32}$")
 _ASSETS = {"/assets/app.css": "app.css", "/assets/app.js": "app.js"}
 _MAX_BODY = 32 * 1024
+MAX_SESSIONS = 32
+SESSION_TTL_S = 12 * 60 * 60
+MAX_MEDIA_FILE_BYTES = 200 * 1024**3
+MAX_SESSION_MEDIA_BYTES = 1024**4
+MAX_INDEX_FILES_PER_JOB = 32
+MAX_JOB_RUNTIME_S = 12 * 60 * 60
+MAX_HTTP_WORKERS = 16
+HTTP_REQUEST_QUEUE_SIZE = 16
+HTTP_REQUEST_TIMEOUT_S = 30
 
 
 class UIError(RuntimeError):
@@ -53,6 +63,7 @@ class UISession:
     files: dict[str, LocalMedia] = field(default_factory=dict)
     indexed_media: dict[str, str] = field(default_factory=dict)
     candidates: dict[str, dict] = field(default_factory=dict)
+    created_monotonic: float = field(default_factory=time.monotonic)
 
 
 def native_picker(kind: str) -> list[Path]:
@@ -80,12 +91,17 @@ def native_picker(kind: str) -> list[Path]:
 class LocalUIService:
     def __init__(self, *, picker: Callable[[str], list[Path]] = native_picker,
                  index_function=index_video, search_function=search,
-                 decide_function=decide, references_function=references):
+                 decide_function=decide, references_function=references,
+                 model_readiness_fn=vjepa2_readiness):
         self.picker = picker
         self.index_function = index_function
         self.search_function = search_function
         self.decide_function = decide_function
         self.references_function = references_function
+        self.engines = {
+            "color-motion": {"available": True, "message": "Color + MotionはOpenCV CPUで利用できます。"},
+            "vjepa2": model_readiness_fn(),
+        }
         self.sessions: dict[str, UISession] = {}
         self.session_lock = threading.RLock()
         self.job_lock = threading.RLock()
@@ -100,6 +116,12 @@ class LocalUIService:
     def new_session(self) -> UISession:
         session = UISession(secrets.token_urlsafe(32), secrets.token_urlsafe(32), self.default_store_dir())
         with self.session_lock:
+            now = time.monotonic()
+            for token, existing in list(self.sessions.items()):
+                if now - existing.created_monotonic > SESSION_TTL_S:
+                    self.sessions.pop(token, None)
+            if len(self.sessions) >= MAX_SESSIONS:
+                raise UIError(503, "画面セッション数の上限に達しました。時間をおいて再度開いてください")
             self.sessions[session.token] = session
         return session
 
@@ -107,7 +129,11 @@ class LocalUIService:
         if not token:
             return None
         with self.session_lock:
-            return self.sessions.get(token)
+            session = self.sessions.get(token)
+            if session is not None and time.monotonic() - session.created_monotonic > SESSION_TTL_S:
+                self.sessions.pop(token, None)
+                return None
+            return session
 
     @staticmethod
     def _safe_file(entry: LocalMedia) -> bool:
@@ -130,6 +156,10 @@ class LocalUIService:
             if prior:
                 added.append(self._public_file(prior, session.store_dir))
                 continue
+            if stat.st_size > MAX_MEDIA_FILE_BYTES:
+                raise UIError(413, "動画ファイルがこの画面の登録上限を超えています")
+            if sum(item.size for item in session.files.values()) + stat.st_size > MAX_SESSION_MEDIA_BYTES:
+                raise UIError(413, "この画面に登録できる動画の合計サイズ上限に達しました")
             if len(session.files) >= 512:
                 raise UIError(413, "一度に登録できる動画数の上限に達しました")
             item = LocalMedia(secrets.token_hex(16), path, path.name, stat.st_size, stat.st_mtime_ns, stat.st_dev, stat.st_ino)
@@ -189,7 +219,7 @@ class LocalUIService:
             job = {"id": secrets.token_hex(16), "owner": session.token, "kind": kind,
                    "status": "queued", "stage": "queued", "done": 0, "total": 0,
                    "current_name": "", "device": "", "message": "準備中", "error": None,
-                   "results": [], "fields": fields, "started_at": time.time()}
+                   "results": [], "fields": fields, "started_at": time.monotonic()}
             self.job = job
             self.cancel_event = threading.Event()
             target = self._run_index if kind == "index" else self._run_search
@@ -200,8 +230,9 @@ class LocalUIService:
     def start_index(self, session: UISession, file_ids: list[str], engine: str) -> dict:
         if engine not in {"vjepa2", "color-motion"}:
             raise UIError(400, "検索方式が不正です")
+        self._require_engine(engine)
         unique = list(dict.fromkeys(file_ids))
-        if not unique or len(unique) > 512 or any(not isinstance(fid, str) or fid not in session.files for fid in unique):
+        if not unique or len(unique) > MAX_INDEX_FILES_PER_JOB or any(not isinstance(fid, str) or fid not in session.files for fid in unique):
             raise UIError(400, "この画面で選択した動画を指定してください")
         for fid in unique:
             if not self._safe_file(session.files[fid]):
@@ -212,6 +243,7 @@ class LocalUIService:
     def start_search(self, session: UISession, file_id: str, start: float, engine: str) -> dict:
         if engine not in {"vjepa2", "color-motion"}:
             raise UIError(400, "検索方式が不正です")
+        self._require_engine(engine)
         item = session.files.get(file_id)
         if item is None:
             raise UIError(404, "選択した動画IDが見つかりません")
@@ -235,6 +267,11 @@ class LocalUIService:
         session.candidates.clear()
         return self._start_job(session, "search", {"file_id": file_id, "start": start, "engine": engine})
 
+    def _require_engine(self, engine: str) -> None:
+        status = self.engines[engine]
+        if not status["available"]:
+            raise UIError(409, status["message"])
+
     def cancel_job(self, session: UISession) -> dict:
         with self.job_lock:
             if not self.job or self.job["owner"] != session.token or self.job["status"] not in {"queued", "running", "cancelling"}:
@@ -257,7 +294,13 @@ class LocalUIService:
             message = str(exc)
             for item in session.files.values():
                 message = message.replace(str(item.path), "[ローカル動画]")
+                message = message.replace(item.name, "[ローカル動画]")
             message = message.replace(str(session.store_dir), "[ローカル保存先]")
+            # Core errors are user-facing text. Any path separator indicates
+            # unexpected diagnostic detail; hide the whole message rather than
+            # trying to parse/redact arbitrary absolute paths or quoted names.
+            if "/" in message or "\\" in message:
+                return "ローカル処理に失敗しました。動画または保存先を確認してください。詳細はこの画面には表示しません。"
             return message[:300]
         return "ローカル処理に失敗しました。動画または保存先を確認してください。詳細はこの画面には表示しません。"
 
@@ -269,6 +312,8 @@ class LocalUIService:
                     break
                 item = session.files[file_id]
                 def progress(event):
+                    if time.monotonic() - job["started_at"] >= MAX_JOB_RUNTIME_S:
+                        cancel.set()
                     stage = event.get("stage", "indexing")
                     message = "V-JEPA2をローカルで起動中" if stage == "loading_model" else "窓を解析・保存中"
                     self._update_job(job, stage=stage, done=event.get("done", 0), total=event.get("total", 0),
@@ -298,6 +343,8 @@ class LocalUIService:
             item = session.files[fields["file_id"]]
             matches = self.search_function(item.path, fields["start"], fields["start"] + 2.0,
                                            self.store_path(session), engine=fields["engine"])
+            if time.monotonic() - job["started_at"] >= MAX_JOB_RUNTIME_S:
+                raise SearchError("search exceeded the local job time limit")
             if cancel.is_set():
                 self._update_job(job, status="cancelled", stage="cancelled", message="検索を停止しました。結果は破棄しました")
                 return
@@ -338,6 +385,7 @@ class LocalUIService:
         return {"files": [self._public_file(item, session.store_dir) for item in session.files.values()],
                 "store_label": session.store_dir.name or "Application Support",
                 "store_ready": store.is_file() and not store.is_symlink(),
+                "engines": self.engines,
                 "job": job, "query_window_seconds": 2,
                 "query_tolerance_seconds": QUERY_DURATION_TOLERANCE_S}
 
@@ -359,10 +407,35 @@ class LocalUIService:
 class LoopbackHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = HTTP_REQUEST_QUEUE_SIZE
 
     def __init__(self, address, service: LocalUIService):
         self.service = service
+        self.worker_slots = threading.BoundedSemaphore(MAX_HTTP_WORKERS)
         super().__init__(address, UIRequestHandler)
+
+    def get_request(self):
+        request, address = super().get_request()
+        request.settimeout(HTTP_REQUEST_TIMEOUT_S)
+        return request, address
+
+    def process_request(self, request, client_address):
+        if not self.worker_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        thread = threading.Thread(target=self.process_request_thread, args=(request, client_address), daemon=True)
+        try:
+            thread.start()
+        except Exception:
+            self.worker_slots.release()
+            self.shutdown_request(request)
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.worker_slots.release()
 
 
 class UIRequestHandler(BaseHTTPRequestHandler):
@@ -447,8 +520,13 @@ class UIRequestHandler(BaseHTTPRequestHandler):
     def _body(self) -> dict:
         if self.headers.get_content_type() != "application/json":
             raise UIError(415, "JSONリクエストだけ受け付けます")
+        if self.headers.get("Transfer-Encoding"):
+            raise UIError(400, "chunked request body is not accepted")
+        raw_size = self.headers.get("Content-Length")
+        if raw_size is None or not re.fullmatch(r"\d{1,8}", raw_size.strip()):
+            raise UIError(400, "リクエストサイズが不正です")
         try:
-            size = int(self.headers.get("Content-Length", "0"))
+            size = int(raw_size)
         except ValueError:
             raise UIError(400, "リクエストサイズが不正です")
         if size < 0 or size > _MAX_BODY:
@@ -551,7 +629,16 @@ class UIRequestHandler(BaseHTTPRequestHandler):
             return
         parsed = urlsplit(self.path)
         if parsed.path == "/":
-            session = self._session(create=True)
+            fetch_site = self.headers.get("Sec-Fetch-Site")
+            origin = self.headers.get("Origin")
+            if fetch_site not in {"same-origin", "none"} or (origin is not None and origin != self._expected_origin()):
+                self._error(403, "同一画面からのアクセスだけ許可されています")
+                return
+            try:
+                session = self._session(create=True)
+            except UIError as exc:
+                self._error(exc.status, str(exc))
+                return
             if session is None:
                 self._error(500, "セッションを作れません")
                 return

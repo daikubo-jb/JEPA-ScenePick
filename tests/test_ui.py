@@ -1,18 +1,26 @@
 from __future__ import annotations
 
 import http.client
+import hashlib
+import io
 import json
+import os
 import re
+import socket
+import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import time
 import unittest
 from http.cookies import SimpleCookie
 from pathlib import Path
+from unittest.mock import patch
 
 from jepasearch.synthetic import make_video
 from jepasearch.ui import LocalUIService, UIError, make_server
-from jepasearch.core import index_video, search as core_search
+from jepasearch.core import SearchError, index_video, search as core_search
 
 
 class FakePicker:
@@ -26,13 +34,58 @@ class FakePicker:
         return [self.video if kind == "file" else self.folder]
 
 
+def unready_vjepa():
+    return {
+        "available": False,
+        "message": "V-JEPA 2は利用不可です。公式SHA-256を設定してください。",
+        "blockers": ["trusted_sha256_pin_missing"],
+        "checkpoint_hash_configured": False,
+        "hash_source_verified": False,
+        "dependencies": {"torch": "not-installed"},
+    }
+
+
+class StartupConfigurationTests(unittest.TestCase):
+    def test_managed_ui_uses_project_model_venv_and_default_local_pin_without_hash_env(self):
+        project = Path(__file__).resolve().parents[1]
+        launcher = (project / "scripts" / "manage_ui_server.sh").read_text(encoding="utf-8")
+        readiness = (project / "scripts" / "check_vjepa_ui_startup.sh").read_text(encoding="utf-8")
+        finder = (project / "scripts" / "open_ui_server.command").read_text(encoding="utf-8")
+        self.assertIn('MODEL_PYTHON="$PROJECT_ROOT/.venv-vjepa/bin/python"', launcher)
+        self.assertNotIn("jepa-risk-detection/.venv/bin/python", launcher)
+        self.assertIn("check_vjepa_ui_startup.sh", launcher)
+        self.assertIn("vjepa2_readiness()", readiness)
+        self.assertIn("model_weights_loaded", readiness)
+        self.assertNotIn("JEPA_RAW_CHECKPOINT_SHA256", launcher + readiness + finder)
+        self.assertIn("sh scripts/manage_ui_server.sh start", finder)
+
+    def test_server_launcher_rejects_malformed_ports_before_pid_cleanup(self):
+        project = Path(__file__).resolve().parents[1]
+        launcher = project / "scripts" / "manage_ui_server.sh"
+        for action in ("start", "stop"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory(prefix="jepa-pid-boundary-") as tmp:
+                base = Path(tmp)
+                pid_dir = base / "run"
+                pid_dir.mkdir()
+                project_key = hashlib.sha256(str(project.resolve()).encode()).hexdigest()[:12]
+                (pid_dir / f"jepa-video-search-ui-{project_key}-..").mkdir()
+                sentinel = base / "sentinel.pid"
+                sentinel.write_text("keep\n", encoding="utf-8")
+                env = os.environ.copy()
+                env.update({"TMPDIR": str(pid_dir), "JEPA_UI_PORT": "../../../sentinel"})
+                result = subprocess.run(["sh", str(launcher), action], cwd=project, env=env,
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(sentinel.read_text(encoding="utf-8"), "keep\n")
+
+
 class UITestCase(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="jepa-ui-synthetic-")
         self.root = Path(self.temp.name)
         self.video = make_video(self.root / "generated-ui-fixture.mp4", duration=4)
         self.picker = FakePicker(self.video, self.root)
-        self.service = LocalUIService(picker=self.picker)
+        self.service = LocalUIService(picker=self.picker, model_readiness_fn=unready_vjepa)
         # Never probe the user's default Application Support index from UI tests.
         self.service.default_store_dir = lambda: self.root
         self.server = make_server(0, service=self.service)
@@ -68,7 +121,7 @@ class UITestCase(unittest.TestCase):
         return result
 
     def bootstrap(self):
-        status, headers, body = self.request("GET", "/")
+        status, headers, body = self.request("GET", "/", headers={"Sec-Fetch-Site": "none"})
         self.assertEqual(status, 200)
         cookie = SimpleCookie()
         cookie.load(headers["Set-Cookie"])
@@ -98,7 +151,133 @@ class UITestCase(unittest.TestCase):
         self.fail(f"job did not reach {wanted}")
 
 
+class EngineReadinessTests(UITestCase):
+    def test_unready_vjepa_is_rejected_before_queue_but_baseline_needs_explicit_selection(self):
+        self.bootstrap()
+        file_id = self.choose_video_and_store()
+        status, _, payload = self.request("GET", "/api/state")
+        engines = json.loads(payload)["engines"]
+        self.assertFalse(engines["vjepa2"]["available"])
+        self.assertTrue(engines["color-motion"]["available"])
+
+        called = []
+        def fake_index(path, store, **kwargs):
+            called.append(kwargs["engine"])
+            return {"status": "complete", "media_id": "c" * 64,
+                    "pipeline": "color-motion-test-pipeline", "windows_added": 1}
+        self.service.index_function = fake_index
+        status, _, payload = self.request("POST", "/api/index", body={"file_ids": [file_id], "engine": "vjepa2"})
+        self.assertEqual(status, 409)
+        self.assertIn("公式SHA-256", payload.decode())
+        self.assertIsNone(self.service.job)
+        self.assertEqual(called, [])
+
+        # Baseline starts only after the request explicitly names that engine.
+        status, _, payload = self.request("POST", "/api/index", body={"file_ids": [file_id], "engine": "color-motion"})
+        self.assertEqual(status, 202, payload)
+        job = self.wait_job()
+        self.assertEqual(job["engine"], "color-motion")
+        self.assertEqual(called, ["color-motion"])
+
+
 class LocalUISecurityTests(UITestCase):
+    def test_cross_site_page_bootstrap_does_not_allocate_sessions(self):
+        self.assertEqual(self.service.sessions, {})
+        status, _, _ = self.request("GET", "/", headers={"Sec-Fetch-Site": "cross-site"})
+        self.assertEqual(status, 403)
+        self.assertEqual(self.service.sessions, {})
+        status, _, _ = self.request("GET", "/", headers={"Origin": "http://attacker.invalid"})
+        self.assertEqual(status, 403)
+        self.assertEqual(self.service.sessions, {})
+        status, _, _ = self.request("GET", "/")
+        self.assertEqual(status, 403)
+        self.assertEqual(self.service.sessions, {})
+        status, headers, _ = self.request("GET", "/", headers={"Sec-Fetch-Site": "none"})
+        self.assertEqual(status, 200)
+        self.assertIn("Set-Cookie", headers)
+        self.assertEqual(len(self.service.sessions), 1)
+
+    def test_failed_job_hides_synthetic_private_path_from_response_and_stdio(self):
+        self.bootstrap()
+        file_id = self.choose_video_and_store()
+        private_marker = "SYNTHETIC-PRIVATE-PATH-DO-NOT-LEAK"
+        fake_private_path = f"/Users/example/Movies/{private_marker}/game.mp4"
+
+        def failing_index(path, store, **kwargs):
+            raise SearchError(f"decoder failed for {path}; auxiliary={fake_private_path}; store={store}")
+
+        self.service.index_function = failing_index
+        captured_out, captured_err = io.StringIO(), io.StringIO()
+        with patch.object(sys, "stdout", captured_out), patch.object(sys, "stderr", captured_err):
+            status, _, payload = self.request("POST", "/api/index", body={"file_ids": [file_id], "engine": "color-motion"})
+            self.assertEqual(status, 202, payload)
+            job = self.wait_job("failed")
+            status, _, payload = self.request("GET", "/api/job")
+            self.assertEqual(status, 200, payload)
+
+        surfaces = (payload.decode("utf-8"), job["error"], captured_out.getvalue(), captured_err.getvalue())
+        for surface in surfaces:
+            self.assertNotIn(private_marker, surface)
+            self.assertNotIn(fake_private_path, surface)
+            self.assertNotIn(str(self.video), surface)
+            self.assertNotIn(str(self.root), surface)
+        self.assertIn("詳細はこの画面には表示しません", job["error"])
+
+    def test_server_bounds_http_workers_and_applies_socket_timeout(self):
+        from jepasearch.ui import HTTP_REQUEST_TIMEOUT_S, MAX_HTTP_WORKERS
+        self.assertEqual(self.server.request_queue_size, 16)
+        self.assertEqual(self.server.worker_slots._initial_value, MAX_HTTP_WORKERS)
+        with patch('jepasearch.ui.MAX_HTTP_WORKERS',1):
+            bounded=make_server(0,service=LocalUIService(picker=self.picker))
+            client=socket.create_connection(('127.0.0.1',bounded.server_port),timeout=2)
+            accepted,_=bounded.get_request()
+            self.assertEqual(accepted.gettimeout(),HTTP_REQUEST_TIMEOUT_S)
+            bounded.shutdown_request(accepted)
+            client.close()
+            left,right=socket.socketpair()
+            self.assertTrue(bounded.worker_slots.acquire(blocking=False))
+            bounded.process_request(left,('127.0.0.1',0))
+            self.assertEqual(left.fileno(),-1)
+            bounded.worker_slots.release()
+            right.close()
+            bounded.server_close()
+
+    def test_session_and_media_registration_have_explicit_caps(self):
+        from jepasearch.ui import MAX_MEDIA_FILE_BYTES, MAX_SESSIONS
+        service=LocalUIService(picker=self.picker)
+        service.default_store_dir=lambda:self.root
+        with patch('jepasearch.ui.MAX_SESSIONS',1):
+            first=service.new_session()
+            with self.assertRaisesRegex(UIError,'セッション数の上限'):
+                service.new_session()
+            first.created_monotonic-=60*60*13
+            self.assertIsNone(service.get_session(first.token))
+            second=service.new_session()
+        self.assertNotEqual(first.token,second.token)
+        with patch('jepasearch.ui.MAX_MEDIA_FILE_BYTES',self.video.stat().st_size-1):
+            with self.assertRaisesRegex(UIError,'登録上限'):
+                service.add_selected_files(second)
+        self.assertEqual(second.files,{})
+
+    def test_index_job_batch_has_a_separate_limit_from_session_capacity(self):
+        from dataclasses import replace
+        service=LocalUIService(picker=self.picker)
+        session=service.new_session()
+        selected=service.add_selected_files(session)[0]['id']
+        other_id='f'*32
+        session.files[other_id]=replace(session.files[selected],file_id=other_id)
+        with patch('jepasearch.ui.MAX_INDEX_FILES_PER_JOB',1):
+            with self.assertRaisesRegex(UIError,'選択した動画'):
+                service.start_index(session,[selected,other_id],'color-motion')
+
+    def test_chunked_post_body_is_refused_before_json_parse(self):
+        self.bootstrap()
+        status,_,payload=self.request('POST','/api/select-video',body=None,
+                                      headers={'Transfer-Encoding':'chunked'})
+        self.assertEqual(status,400,payload)
+        self.assertIn('chunked',payload.decode())
+        self.assertEqual(self.picker.calls,[])
+
     def test_loopback_static_page_csp_and_no_remote_assets(self):
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         html = self.bootstrap()
@@ -120,6 +299,20 @@ class LocalUISecurityTests(UITestCase):
         self.assertIn('$("#video-empty").hidden = Boolean(query.value);', script.decode())
         status, _, _ = self.request("GET", "/api/state", host="attacker.invalid")
         self.assertEqual(status, 400)
+
+    def test_vjepa_readiness_copy_keeps_provenance_collapsed_and_blockers_visible(self):
+        html = self.bootstrap()
+        self.assertIn('<details id="model-details" class="model-details" hidden>', html)
+        self.assertIn("モデル詳細・検証状態", html)
+        self.assertIn('id="model-details-message"', html)
+        status, _, script = self.request("GET", "/assets/app.js")
+        self.assertEqual(status, 200)
+        source = script.decode()
+        self.assertIn('jepa.available ? " · 利用可能" : " · 利用不可"', source)
+        self.assertIn('? "V-JEPA 2：利用可能"', source)
+        self.assertIn('$("#model-details-message").textContent = jepaMessage;', source)
+        self.assertIn('`${jepaMessage} 索引は開始できません。利用する場合はColor + Motionを明示的に選択してください。`', source)
+        self.assertIn('V-JEPA 2は利用不可です: ${jepaMessage}', source)
 
     def test_post_requires_exact_origin_csrf_and_has_no_path_api(self):
         self.bootstrap()
@@ -164,6 +357,7 @@ class LocalUISecurityTests(UITestCase):
         self.assertIn("正解確率ではありません", html)
         self.assertIn('id="query-playback-status"', html)
         self.assertIn('id="candidate-playback-status"', html)
+        self.assertIn('id="engine-readiness"', html)
         status, _, js = self.request("GET", "/assets/app.js")
         self.assertEqual(status, 200)
         self.assertIn("queryFileIndexedForSelectedEngine", js.decode())
@@ -176,7 +370,13 @@ class LocalUISecurityTests(UITestCase):
         initial_state = json.loads(payload)
         self.assertEqual(initial_state["files"], [])
         self.assertFalse(initial_state["store_ready"])
+        self.assertTrue(initial_state["engines"]["color-motion"]["available"])
+        self.assertFalse(initial_state["engines"]["vjepa2"]["available"])
         file_id = self.choose_video_and_store()
+        status, _, payload = self.request("POST", "/api/index", body={"file_ids": [file_id], "engine": "vjepa2"})
+        self.assertEqual(status, 409)
+        self.assertIn("公式SHA-256", payload.decode())
+        self.assertIsNone(self.service.job)
         status, _, payload = self.request("POST", "/api/search", body={"file_id": file_id, "start": 0, "engine": "color-motion"})
         self.assertEqual(status, 409)
         self.assertIn("Color + Motionではこの動画が未索引", payload.decode())
@@ -188,6 +388,8 @@ class LocalUISecurityTests(UITestCase):
         status, _, payload = self.request("GET", "/api/state")
         state = json.loads(payload)
         self.assertTrue(state["store_ready"])
+        self.assertEqual(stat.S_IMODE((self.root/"index.sqlite").stat().st_mode),0o600)
+        self.assertEqual(stat.S_IMODE(Path(str(self.root/"index.sqlite")+".lock").stat().st_mode),0o600)
         self.assertTrue(state["files"][0]["indexed"])
         self.assertEqual(state["files"][0]["indexed_pipelines"]["color-motion"], index_job["fingerprint"])
         self.assertIs(self.service.index_function, index_video)
@@ -202,7 +404,7 @@ class LocalUISecurityTests(UITestCase):
         # A changed engine without a matching pipeline is rejected before a job is queued.
         status, _, payload = self.request("POST", "/api/search", body={"file_id": file_id, "start": 0, "engine": "vjepa2"})
         self.assertEqual(status, 409)
-        self.assertIn("V-JEPA 2ではこの動画が未索引", payload.decode())
+        self.assertIn("公式SHA-256", payload.decode())
         session_token = self.cookie.split("=", 1)[1]
         self.assertEqual(self.service.job_state(self.service.get_session(session_token))["id"], index_job["id"])
         status, _, _ = self.request("POST", "/api/search", body={"file_id": file_id, "start": 0, "end": 3, "engine": "color-motion"})
@@ -312,7 +514,8 @@ class UIJobLifecycleTests(unittest.TestCase):
                 return {"status": "cancelled", "media_id": "a" * 64, "windows_added": 1}
             return {"status": "complete", "media_id": "a" * 64, "pipeline": "vjepa2-test-fingerprint", "windows_added": 2}
 
-        service = LocalUIService(picker=picker, index_function=fake_index)
+        service = LocalUIService(picker=picker, index_function=fake_index,
+                                 model_readiness_fn=lambda: {"available": True, "message": "mock ready", "blockers": [], "checkpoint_hash_configured": True, "hash_source_verified": False, "dependencies": {}})
         service.default_store_dir = lambda: root
         owner = service.new_session()
         another = service.new_session()

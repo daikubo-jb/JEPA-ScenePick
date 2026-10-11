@@ -2,7 +2,7 @@
 
 const csrf = document.querySelector('meta[name="csrf-token"]').content;
 const $ = (selector) => document.querySelector(selector);
-const state = { files: [], job: null, results: [], resultProvenance: null, engineTouched: false, queryMode: "segment", candidateMode: "segment", activePreview: "query", selectedCandidate: null, pendingDecisions: new Set(), searchSubmitting: false, indexSubmitting: false, cancelSubmitting: false, searchSequence: 0, stateSequence: 0, pollSequence: 0, referenceSequence: 0, toastTimer: 0, pollTimer: 0 };
+const state = { files: [], engines: {}, job: null, results: [], resultProvenance: null, engineTouched: false, queryMode: "segment", candidateMode: "segment", activePreview: "query", selectedCandidate: null, pendingDecisions: new Set(), searchSubmitting: false, indexSubmitting: false, cancelSubmitting: false, searchSequence: 0, stateSequence: 0, pollSequence: 0, referenceSequence: 0, toastTimer: 0, pollTimer: 0 };
 
 function toast(message) {
   const node = $("#toast");
@@ -60,6 +60,38 @@ function empty(node, text) {
 
 function engineName(engine) {
   return engine === "color-motion" ? "Color + Motion" : engine === "vjepa2" ? "V-JEPA 2" : engine || "不明";
+}
+
+function engineAvailable(engine) {
+  return Boolean(state.engines[engine]?.available);
+}
+
+function renderEngineReadiness(engines) {
+  state.engines = engines || {};
+  const jepa = state.engines.vjepa2 || { available: false, message: "モデル準備状態を取得できません。" };
+  const jepaMessage = jepa.message || "モデル準備状態を取得できません。";
+  const selectedBefore = $("#engine").value;
+  const option = $('#engine option[value="vjepa2"]');
+  option.disabled = !jepa.available;
+  option.textContent = `V-JEPA 2 · ViT-L / 16${jepa.available ? " · 利用可能" : " · 利用不可"}`;
+  if (selectedBefore === "vjepa2" && !jepa.available) {
+    option.selected = true;
+    $("#engine").value = "vjepa2";
+  }
+  const selected = $('#engine').value;
+  const status = $('#engine-readiness');
+  const details = $("#model-details");
+  $("#model-details-message").textContent = jepaMessage;
+  details.hidden = false;
+  if (selected === "vjepa2") {
+    status.textContent = jepa.available
+      ? "V-JEPA 2：利用可能"
+      : `${jepaMessage} 索引は開始できません。利用する場合はColor + Motionを明示的に選択してください。`;
+  } else {
+    status.textContent = `Color + Motion: ${state.engines["color-motion"]?.message || "利用できます。"} ${jepa.available ? "V-JEPA 2も利用できます。" : `V-JEPA 2は利用不可です: ${jepaMessage}`}`;
+  }
+  status.classList.toggle("is-unavailable", selected === "vjepa2" && !jepa.available);
+  status.classList.toggle("is-available", jepa.available && (selected === "vjepa2" || selected === "color-motion"));
 }
 
 function renderResultProvenance() {
@@ -126,7 +158,7 @@ function renderFiles() {
   }
   query.value = state.files.some((file) => file.id === priorQueryId) ? priorQueryId : state.files[0].id;
   $("#library-count").textContent = `${state.files.length}本`;
-  $("#start-index").disabled = false;
+  $("#start-index").disabled = !engineAvailable($("#engine").value);
   $("#video-empty").hidden = Boolean(query.value);
 }
 
@@ -288,6 +320,7 @@ $("#candidate-player").addEventListener("loadedmetadata", () => {
 });
 $("#engine").addEventListener("change", () => {
   state.engineTouched = true;
+  renderEngineReadiness(state.engines);
   renderResultProvenance();
   renderJob(state.job);
 });
@@ -415,7 +448,7 @@ function renderJob(job) {
     renderResultProvenance();
   }
   const busy = isBusy(job);
-  $("#start-index").disabled = busy || state.files.length === 0 || state.indexSubmitting;
+  $("#start-index").disabled = busy || state.files.length === 0 || state.indexSubmitting || !engineAvailable($("#engine").value);
   const hasQuery = Boolean($("#query-file").value);
   const indexed = queryFileIndexedForSelectedEngine();
   const preparePanel = $("#library-settings");
@@ -423,7 +456,7 @@ function renderJob(job) {
   preparePanel.classList.toggle("is-prepared", indexed);
   if (job?.kind === "index" && job.status === "complete" && indexed) preparePanel.open = false;
   else if (!busy && hasQuery && !indexed) preparePanel.open = true;
-  $("#start-search").setAttribute("aria-disabled", String(busy || !hasQuery || !indexed || state.searchSubmitting));
+  $("#start-search").setAttribute("aria-disabled", String(busy || !hasQuery || !indexed || !engineAvailable($("#engine").value) || state.searchSubmitting));
   const notice = $("#query-index-notice");
   notice.hidden = false;
   if (!hasQuery) notice.textContent = "「動画・索引」から動画を選ぶと検索できます。";
@@ -495,6 +528,7 @@ async function refreshState() {
     const data = await api("/api/state");
     if (sequence !== state.stateSequence || state.searchSubmitting || state.indexSubmitting) return;
     if (state.job && isBusy(state.job) && data.job?.id !== state.job.id) return;
+    renderEngineReadiness(data.engines);
     const shape = (files) => JSON.stringify(files.map((f) => [f.id, f.indexed, f.indexed_pipelines]));
     const changed = shape(state.files) !== shape(data.files);
     state.files = data.files;
@@ -558,6 +592,10 @@ $("#choose-store").addEventListener("click", async () => {
 
 $("#start-index").addEventListener("click", async () => {
   if (state.indexSubmitting || isBusy(state.job)) return;
+  if (!engineAvailable($("#engine").value)) {
+    toast(state.engines[$("#engine").value]?.message || "選択した方式は利用できません");
+    return;
+  }
   const file_ids = Array.from(document.querySelectorAll("#library-list input:checked"), (input) => input.value);
   state.indexSubmitting = true;
   state.stateSequence += 1;
@@ -593,6 +631,10 @@ $("#cancel-job").addEventListener("click", async () => {
 
 $("#start-search").addEventListener("click", async () => {
   if (state.searchSubmitting || isBusy(state.job)) return;
+  if (!engineAvailable($("#engine").value)) {
+    toast(state.engines[$("#engine").value]?.message || "選択した方式は利用できません");
+    return;
+  }
   const file_id = $("#query-file").value;
   const start = Number($("#query-start").value);
   if (!file_id) {
