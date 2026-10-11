@@ -44,3 +44,10 @@ __pycache__/
 /scripts/scale_diagnose.py
 /scripts/scale_retest.py
 /scripts/verify_scale_report.py
+
+# Archived QA reports are preserved outside the distributable repository.
+/reports/index-search-flow-regression-20261006.md
+/reports/ui-final-layout-chrome-e2e-20261007.md
+/reports/ui-playback-vjepa-workflow-20261007.md
+/reports/ui-redesign-validation-20261006.md
+/reports/ui-two-step-redesign-20261007.md
